@@ -33,6 +33,7 @@
 
 #include "OLEDDisplay.h"
 #include <brzo_i2c.h>
+#include <algorithm>
 
 #if F_CPU == 160000000L
   #define BRZO_I2C_SPEED 1000
@@ -78,10 +79,10 @@ class SSD1306Brzo : public OLEDDisplay {
          for (x = 0; x < this->width(); x++) {
           uint16_t pos = x + y * this->width();
           if (buffer[pos] != buffer_back[pos]) {
-            minBoundY = _min(minBoundY, y);
-            maxBoundY = _max(maxBoundY, y);
-            minBoundX = _min(minBoundX, x);
-            maxBoundX = _max(maxBoundX, x);
+            minBoundY = std::min(minBoundY, y);
+            maxBoundY = std::max(maxBoundY, y);
+            minBoundX = std::min(minBoundX, x);
+            maxBoundX = std::max(maxBoundX, x);
           }
           buffer_back[pos] = buffer[pos];
         }
