@@ -5,6 +5,9 @@
 #include "graphics/ScreenFonts.h"
 #include "graphics/SharedUIDisplay.h"
 #include "main.h"
+#if defined(VK_HAS_PINYIN_PREDICTION)
+#include "PinyinPrediction.h"
+#endif
 #if defined(VK_HAS_CJK_IME)
 #if defined(CJK_IME_ZHUYIN)
 // bpmf_engine.h (and with it the composer and the dictionary) arrives through
@@ -132,6 +135,9 @@ void VirtualKeyboard::initializeKeyboard()
 
 void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offsetY)
 {
+#if defined(GAT562_T9_KEYBOARD)
+    drawInputArea(display, offsetX, offsetY, display->getHeight());
+#else
     // Repeat ticking is driven by NotificationRenderer once per frame
     // Base styles
     display->setColor(WHITE);
@@ -227,6 +233,7 @@ void VirtualKeyboard::draw(OLEDDisplay *display, int16_t offsetX, int16_t offset
             }
         }
     }
+#endif
 }
 
 void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16_t offsetY, int16_t keyboardStartY)
@@ -249,10 +256,37 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
     if (!headerText.empty()) {
 #endif
         // Draw header and reserve exact font height (plus a tighter gap) to maximize input area
+#if defined(GAT562_T9_KEYBOARD)
+        std::string visibleHeader = headerText;
+        const int headerWidth = screenWidth - display->getStringWidth("EN") - 8;
+        while (!visibleHeader.empty() && display->getStringWidth(visibleHeader.c_str()) > headerWidth) {
+            size_t last = visibleHeader.size() - 1;
+            while (last > 0 && (static_cast<uint8_t>(visibleHeader[last]) & 0xC0) == 0x80)
+                --last;
+            visibleHeader.erase(last);
+        }
+        display->drawString(offsetX + 2, offsetY, visibleHeader.c_str());
+#else
         display->drawString(offsetX + 2, offsetY, headerText.c_str());
+#endif
         // On very small screens (e.g., 128x64), push the input box as close as possible to the header
         headerHeight = FONT_HEIGHT_SMALL; // no extra padding baked in
     }
+
+#if defined(GAT562_T9_KEYBOARD)
+    const char *inputLanguage = "EN";
+#if defined(VK_HAS_CJK_IME)
+    if (IMEStatus == ACTIVE) {
+#if defined(CJK_IME_ZHUYIN)
+        inputLanguage = "TW";
+#else
+        inputLanguage = "CN";
+#endif
+    }
+#endif
+    display->drawString(offsetX + screenWidth - display->getStringWidth(inputLanguage) - 2, offsetY, inputLanguage);
+    headerHeight = FONT_HEIGHT_SMALL;
+#endif
 
     // Input box - from below header down to just above the keyboard
     const int boxX = offsetX + 2;
@@ -298,6 +332,11 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
     // Chinese selecting area display
 #if defined(VK_HAS_CJK_IME)
     if (IMEStatus == ACTIVE) {
+#if defined(GAT562_T9_KEYBOARD)
+        const int candidateBottom = boxY + boxHeight;
+#else
+        const int candidateBottom = boxHeight;
+#endif
         std::string currentPinyin = inputText.substr(processedWords, inputText.length() - processedWords);
 #if defined(TINYLORA_ADVANCED_IME)
         int fulllen = 0;
@@ -316,7 +355,7 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
             if (fulllen < display->getWidth() - 5) {
                 selectionPos.push_back(fulllen - 6);
                 displayList.push_back(results[i]);
-                display->drawString(lastpos, boxHeight - chineseArea, results[i].c_str());
+                display->drawString(lastpos, candidateBottom - chineseArea, results[i].c_str());
                 if ((i - resultsOffset) ==
 #if defined(GAT562_T9_KEYBOARD)
                     candidateCursor
@@ -324,14 +363,14 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
                     cursorCol
 #endif
                 ) {
-                    display->drawHorizontalLine(lastpos, boxHeight, width);
-                    display->drawHorizontalLine(lastpos, boxHeight + 1, width);
+                    display->drawHorizontalLine(lastpos, candidateBottom, width);
+                    display->drawHorizontalLine(lastpos, candidateBottom + 1, width);
                 }
             } else {
                 break;
             }
         }
-#elif defined(CJK_IME_ZHUYIN)
+#elif defined(CJK_IME_ZHUYIN) || defined(VK_HAS_PINYIN_PREDICTION)
         // Zhuyin backend: the engine returns whole-word candidates. Pack them into
         // the same selectList/selectListLayout structure the pinyin path fills, so
         // selectChineseChar()/getChineseChar() work unchanged - each layout entry
@@ -339,24 +378,55 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
         uint8_t gotChars = 0;
         selectList = "";
         selectListLayout = {};
+        std::string lastChar;
+        size_t e = std::min<size_t>(processedWords, inputText.size());
+        if (e > 0) {
+            size_t s = e - 1;
+            while (s > 0 && ((uint8_t)inputText[s] & 0xC0) == 0x80)
+                --s;
+            lastChar = inputText.substr(s, e - s);
+        }
+#if defined(GAT562_T9_KEYBOARD)
+        const std::string query = currentPinyin.empty() ? "p" + lastChar : "s" + currentPinyin;
+        if (candidateQuery != query) {
+            candidateQuery = query;
+            selectListOffset = 0;
+            candidateCursor = 0;
+            candidatePageStarts.clear();
+            selectLastCandidate = false;
+#if defined(VK_HAS_PINYIN_PREDICTION)
+            pinyinPrediction = currentPinyin.empty();
+            pinyinCandidates.clear();
+            if (pinyinPrediction) {
+                pinyinCandidates = gat562PredictAfter(lastChar);
+            } else {
+                const char *found = pinyin_simple_search(currentPinyin.c_str());
+                const std::string chars = found ? found : "";
+                for (size_t i = 0; i < chars.size();) {
+                    const uint8_t len = getUtf8Length(chars.c_str() + i, 0);
+                    if (len == 0 || i + len > chars.size())
+                        break;
+                    pinyinCandidates.push_back(chars.substr(i, len));
+                    i += len;
+                }
+            }
+#endif
+        }
+#endif
+#if defined(CJK_IME_ZHUYIN)
         if (currentPinyin.empty()) {
             // Nothing is being composed: predict words that continue the last
             // committed character (中 → 中文 / 中國). The engine remembers that the
             // list came from prediction, which selectChineseChar() needs in order
             // to strip that leading character when one is chosen.
-            std::string lastChar;
-            size_t e = processedWords <= inputText.size() ? (size_t)processedWords : inputText.size();
-            if (e > 0) {
-                size_t s = e - 1;
-                while (s > 0 && ((uint8_t)inputText[s] & 0xC0) == 0x80)
-                    s--;
-                lastChar = inputText.substr(s, e - s);
-            }
             bpmfEngine.predictAfter(lastChar);
         } else {
             bpmfEngine.searchFor(currentPinyin);
         }
         const std::vector<std::string> &zcands = bpmfEngine.candidates();
+#else
+        const std::vector<std::string> &zcands = pinyinCandidates;
+#endif
         selectListfulllen = (int)zcands.size();
         // Fit as many candidates as the row physically holds rather than a fixed
         // count: two-character phrases are twice as wide as single characters, so a
@@ -366,23 +436,45 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
         // pages fill to the edge. Paging advances by however many actually fit.
         const int candAreaW = display->getWidth() - 10;
         for (size_t zi = (size_t)selectListOffset; zi < zcands.size() && gotChars < 9; zi++) {
+            std::string candidate = zcands[zi];
+#if defined(GAT562_T9_KEYBOARD)
+            if (currentPinyin.empty() && !lastChar.empty() && candidate.compare(0, lastChar.size(), lastChar) == 0)
+                candidate.erase(0, lastChar.size());
+#endif
             uint8_t hlw = display->getStringWidth(selectList.c_str(), selectList.length(), true);
-            uint8_t cw = display->getStringWidth(zcands[zi].c_str(), zcands[zi].length(), true);
+            uint8_t cw = display->getStringWidth(candidate.c_str(), candidate.length(), true);
             if (gotChars > 0 && (int)(hlw + cw) > candAreaW)
                 break; // next candidate would overflow - leave it for the following page
-            if (cursorCol == gotChars) {
+            if (
+#if defined(GAT562_T9_KEYBOARD)
+                !selectLastCandidate && candidateCursor
+#else
+                cursorCol
+#endif
+                == gotChars) {
                 // Underline spans the whole candidate word, not a fixed single-char
                 // width - a two-character phrase (中文) must show one line under both
                 // glyphs, otherwise only its first character appears selected.
-                display->drawHorizontalLine(hlw, boxHeight, cw);
-                display->drawHorizontalLine(hlw, boxHeight + 1, cw);
+                display->drawHorizontalLine(hlw, candidateBottom, cw);
+                display->drawHorizontalLine(hlw, candidateBottom + 1, cw);
             }
-            selectList.append(zcands[zi]);
-            selectListLayout.push_back((uint8_t)zcands[zi].size());
+            selectList.append(candidate);
+            selectListLayout.push_back((uint8_t)candidate.size());
             gotChars++;
         }
         selectableChars = gotChars;
-        display->drawString(0, boxHeight - chineseArea, selectList.c_str());
+#if defined(GAT562_T9_KEYBOARD)
+        if (selectLastCandidate && gotChars > 0) {
+            candidateCursor = gotChars - 1;
+            const size_t start = selectList.size() - selectListLayout.back();
+            const int x = display->getStringWidth(selectList.substr(0, start).c_str());
+            const int w = display->getStringWidth(selectList.substr(start).c_str());
+            display->drawHorizontalLine(x, candidateBottom, w);
+            display->drawHorizontalLine(x, candidateBottom + 1, w);
+        }
+        selectLastCandidate = false;
+#endif
+        display->drawString(0, candidateBottom - chineseArea, selectList.c_str());
 #else
         uint8_t gotChars = 0;
         uint8_t copiedBytes = 0;
@@ -406,8 +498,8 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
 #endif
                 == gotChars) {
                 uint8_t width = display->getStringWidth(selectList.c_str(), selectList.length(), true);
-                display->drawHorizontalLine(width, boxHeight, 12);
-                display->drawHorizontalLine(width, boxHeight + 1, 12);
+                display->drawHorizontalLine(width, candidateBottom, 12);
+                display->drawHorizontalLine(width, candidateBottom + 1, 12);
             }
             selectList.append(str.substr(copiedBytes, bytesToCopy));
             selectListLayout.push_back(bytesToCopy);
@@ -415,23 +507,23 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
             gotChars++;
         }
         selectableChars = gotChars;
-        display->drawString(0, boxHeight - chineseArea, selectList.c_str());
+        display->drawString(0, candidateBottom - chineseArea, selectList.c_str());
 #endif
         // Hide the paging marker when the candidates fit on one page, otherwise it
         // suggests a next page that does not exist. With several pages it is drawn on
         // every one of them, and pressing it on the last wraps back to the first. The
         // pinyin path keeps drawing it unconditionally: its selectListOffset is a byte
         // offset and does not carry the same meaning.
-#if defined(CJK_IME_ZHUYIN)
+#if defined(CJK_IME_ZHUYIN) || defined(VK_HAS_PINYIN_PREDICTION)
         const bool showPagingMarker = hasMultipleCandidatePages();
 #else
         const bool showPagingMarker = true;
 #endif
         if (showPagingMarker) {
-            display->drawString(display->width() - 10, boxHeight - chineseArea, ">");
+            display->drawString(display->width() - 10, candidateBottom - chineseArea, ">");
             if (cursorCol == 9) {
-                display->drawHorizontalLine(display->width() - 10, boxHeight, display->getStringWidth(">"));
-                display->drawHorizontalLine(display->width() - 10, boxHeight + 1, display->getStringWidth(">"));
+                display->drawHorizontalLine(display->width() - 10, candidateBottom, display->getStringWidth(">"));
+                display->drawHorizontalLine(display->width() - 10, candidateBottom + 1, display->getStringWidth(">"));
             }
         }
     }
@@ -440,7 +532,12 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
     // Text rendering: multi-line if space allows (>= 2 lines), else single-line with leading ellipsis
     const int textX = boxX + 2;
     const int maxTextWidth = boxWidth - 4;
-    const int maxLines = (boxHeight - 2) / inputLineH;
+#if defined(GAT562_T9_KEYBOARD)
+    const int textBoxHeight = boxHeight - chineseArea;
+#else
+    const int textBoxHeight = boxHeight;
+#endif
+    const int maxLines = (textBoxHeight - 2) / inputLineH;
 #if defined(TINYLORA_ADVANCED_IME)
     auto textWidth = [&](const std::string &text) { return display->getStringWidth(text.c_str(), text.length(), true); };
     auto drawText = [&](int16_t x, int16_t y, const std::string &text) { display->drawString(x, y, text.c_str()); };
@@ -479,7 +576,7 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
         const int innerLeft = boxX + 1;
         const int innerRight = boxX + boxWidth - 2;
         const int innerTop = boxY + 1;
-        const int innerBottom = boxY + boxHeight - 2;
+        const int innerBottom = boxY + textBoxHeight - 2;
 
         // Wrap text greedily into lines that fit maxTextWidth
         std::vector<std::string> lines;
@@ -798,6 +895,7 @@ char VirtualKeyboard::getCharForKey(const VirtualKey &key, bool isLongPress)
 void VirtualKeyboard::moveCursorDelta(int dRow, int dCol)
 {
     resetTimeout();
+#if !defined(GAT562_T9_KEYBOARD)
     // wrap around rows and cols in the 4x11 grid
     int r = (int)cursorRow + dRow;
     int c = (int)cursorCol + dCol;
@@ -811,11 +909,12 @@ void VirtualKeyboard::moveCursorDelta(int dRow, int dCol)
         c = 0;
     cursorRow = (uint8_t)r;
     cursorCol = (uint8_t)c;
+#endif
 }
 
 void VirtualKeyboard::moveCursorUp()
 {
-#if defined(GAT562_T9_KEYBOARD)
+#if defined(GAT562_T9_KEYBOARD) && defined(VK_HAS_CJK_IME)
     if (moveCandidateCursor(-1))
         return;
 #endif
@@ -823,7 +922,7 @@ void VirtualKeyboard::moveCursorUp()
 }
 void VirtualKeyboard::moveCursorDown()
 {
-#if defined(GAT562_T9_KEYBOARD)
+#if defined(GAT562_T9_KEYBOARD) && defined(VK_HAS_CJK_IME)
     if (moveCandidateCursor(1))
         return;
 #endif
@@ -831,7 +930,7 @@ void VirtualKeyboard::moveCursorDown()
 }
 void VirtualKeyboard::moveCursorLeft()
 {
-#if defined(GAT562_T9_KEYBOARD)
+#if defined(GAT562_T9_KEYBOARD) && defined(VK_HAS_CJK_IME)
     if (moveCandidateCursor(-1))
         return;
 #endif
@@ -839,7 +938,7 @@ void VirtualKeyboard::moveCursorLeft()
 }
 void VirtualKeyboard::moveCursorRight()
 {
-#if defined(GAT562_T9_KEYBOARD)
+#if defined(GAT562_T9_KEYBOARD) && defined(VK_HAS_CJK_IME)
     if (moveCandidateCursor(1))
         return;
 #endif
@@ -867,7 +966,7 @@ void VirtualKeyboard::moveCursorNext()
 }
 #endif
 
-#if defined(GAT562_T9_KEYBOARD)
+#if defined(GAT562_T9_KEYBOARD) && defined(VK_HAS_CJK_IME)
 bool VirtualKeyboard::hasChineseCandidates() const
 {
     return IMEStatus == ACTIVE && chineseCandidateCount() > 0;
@@ -921,13 +1020,14 @@ void VirtualKeyboard::handlePress()
 {
     resetTimeout(); // Reset timeout on any input activity
 
-#if defined(GAT562_T9_KEYBOARD)
+#if defined(GAT562_T9_KEYBOARD) && defined(VK_HAS_CJK_IME)
     if (hasChineseCandidates()) {
         selectChineseChar(candidateCursor);
         return;
     }
 #endif
 
+#if !defined(GAT562_T9_KEYBOARD)
     const VirtualKey &key = keyboard[cursorRow][cursorCol];
 
     // Don't handle press if the key is empty (but allow special keys)
@@ -963,15 +1063,19 @@ void VirtualKeyboard::handlePress()
     default:
         break;
     }
+#endif
 }
 
 void VirtualKeyboard::handleLongPress()
 {
     resetTimeout(); // Reset timeout on any input activity
 
+#if defined(GAT562_T9_KEYBOARD)
+    submitText();
+#else
     const VirtualKey &key = keyboard[cursorRow][cursorCol];
     // directly enter what cursor selected instead of enter digits.
-#if defined(GAT562_T9_KEYBOARD)
+#if defined(GAT562_T9_KEYBOARD) && defined(VK_HAS_CJK_IME)
     if (hasChineseCandidates()) {
         selectChineseChar(candidateCursor);
         return;
@@ -1035,6 +1139,7 @@ void VirtualKeyboard::handleLongPress()
     default:
         break;
     }
+#endif
 }
 
 void VirtualKeyboard::handleBackspace()
@@ -1090,7 +1195,8 @@ void VirtualKeyboard::handleT9Character(char c)
         deleteCharacter();
     }
 
-    if (c >= 'A' && c <= 'Z') {
+#if defined(VK_HAS_CJK_IME)
+    if (IMEStatus == ACTIVE && c >= 'A' && c <= 'Z') {
         c = c - 'A' + 'a';
     }
 
@@ -1100,6 +1206,7 @@ void VirtualKeyboard::handleT9Character(char c)
         lastT9Millis = now;
         return;
     }
+#endif
 
     if (c >= 0x20 && c <= 0x7e) {
         insertCharacter(c);
@@ -1310,6 +1417,12 @@ bool VirtualKeyboard::isTimedOut() const
 
 void VirtualKeyboard::toggleIME()
 {
+#if defined(GAT562_T9_KEYBOARD) && (defined(CJK_IME_ZHUYIN) || defined(VK_HAS_PINYIN_PREDICTION))
+    candidateQuery.clear();
+    candidatePageStarts.clear();
+    selectLastCandidate = false;
+    selectableChars = 0;
+#endif
 #if defined(VK_HAS_CJK_IME)
     if (IMEStatus == ACTIVE) { // reset vars
 #if defined(TINYLORA_ADVANCED_IME)
@@ -1394,7 +1507,7 @@ void VirtualKeyboard::selectChineseChar(uint8_t chridx)
 #else
     inputTextLayout.erase(inputTextLayout.end() - pinyinLength, inputTextLayout.end());
 #endif
-#if defined(CJK_IME_ZHUYIN)
+#if defined(CJK_IME_ZHUYIN) && !defined(GAT562_T9_KEYBOARD)
     if (bpmfEngine.isPrediction()) {
         // A prediction word starts with the character already committed (中 for the
         // candidate 中文); remove that trailing character so appending the whole word
@@ -1441,11 +1554,18 @@ void VirtualKeyboard::selectChineseChar(uint8_t chridx)
     selectListOffset = 0;
 #if defined(GAT562_T9_KEYBOARD)
     candidateCursor = 0;
+    lastT9Group = 0;
 #endif
+#endif
+#if defined(GAT562_T9_KEYBOARD) && (defined(CJK_IME_ZHUYIN) || defined(VK_HAS_PINYIN_PREDICTION))
+    candidateQuery.clear();
+    candidatePageStarts.clear();
+    selectLastCandidate = false;
+    selectableChars = 0;
 #endif
 }
 
-#if defined(CJK_IME_ZHUYIN)
+#if defined(CJK_IME_ZHUYIN) || defined(VK_HAS_PINYIN_PREDICTION)
 bool VirtualKeyboard::hasMultipleCandidatePages() const
 {
     // selectListOffset is a candidate index and selectListfulllen the candidate count
@@ -1463,13 +1583,19 @@ void VirtualKeyboard::showNextSelection()
     uint8_t listlen = displayList.size();
     uint8_t nextOffset = resultsOffset + listlen;
     resultsOffset = nextOffset > resultsfulllen ? 0 : nextOffset;
-#elif defined(CJK_IME_ZHUYIN)
+#elif defined(CJK_IME_ZHUYIN) || defined(VK_HAS_PINYIN_PREDICTION)
     // In the zhuyin path selectListOffset is a candidate index and selectListfulllen the
     // candidate count (see draw()), unlike the pinyin path where both are byte offsets.
     // Advance by the number of candidates shown on the current page, not selectList's
     // byte length; otherwise a single page overshoots the count and wraps to 0, so
     // long-pressing '>' appears to do nothing.
-    uint8_t nextOffset = selectListOffset + selectableChars;
+    const int nextOffset = selectListOffset + selectableChars;
+#if defined(GAT562_T9_KEYBOARD)
+    if (nextOffset < selectListfulllen)
+        candidatePageStarts.push_back(selectListOffset);
+    else
+        candidatePageStarts.clear();
+#endif
     selectListOffset = nextOffset >= selectListfulllen ? 0 : nextOffset;
 #else
     uint8_t listlen = selectList.length();
@@ -1478,6 +1604,9 @@ void VirtualKeyboard::showNextSelection()
 #endif
 #if defined(GAT562_T9_KEYBOARD)
     candidateCursor = 0;
+#if defined(CJK_IME_ZHUYIN) || defined(VK_HAS_PINYIN_PREDICTION)
+    selectableChars = 0;
+#endif
 #endif
 }
 
@@ -1490,6 +1619,15 @@ void VirtualKeyboard::showPrevSelection()
         resultsOffset = resultsOffset > listlen ? resultsOffset - listlen : 0;
     }
     candidateCursor = listlen > 0 ? listlen - 1 : 0;
+#elif defined(CJK_IME_ZHUYIN) || defined(VK_HAS_PINYIN_PREDICTION)
+    if (!candidatePageStarts.empty()) {
+        selectListOffset = candidatePageStarts.back();
+        candidatePageStarts.pop_back();
+    } else {
+        selectListOffset = 0;
+    }
+    selectLastCandidate = true;
+    selectableChars = 0;
 #else
     uint8_t pageBytes = 0;
     if (!selectListLayout.empty())

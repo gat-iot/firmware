@@ -23,6 +23,10 @@
 #define VK_HAS_CJK_IME 1
 #endif
 
+#if defined(GAT562_T9_KEYBOARD) && defined(CJK_IME_PINYIN) && !defined(TINYLORA_ADVANCED_IME)
+#define VK_HAS_PINYIN_PREDICTION 1
+#endif
+
 #if defined(CJK_IME_ZHUYIN)
 #include "bpmf_engine.h"
 #endif
@@ -106,6 +110,15 @@ class VirtualKeyboard
     uint8_t candidateCursor;
     uint8_t lastT9Group = 0;
     uint32_t lastT9Millis = 0;
+#if defined(CJK_IME_ZHUYIN) || defined(VK_HAS_PINYIN_PREDICTION)
+    std::string candidateQuery;
+    std::vector<int> candidatePageStarts;
+    bool selectLastCandidate = false;
+#endif
+#if defined(VK_HAS_PINYIN_PREDICTION)
+    std::vector<std::string> pinyinCandidates;
+    bool pinyinPrediction = false;
+#endif
 #endif
 
     // processedWords / inputTextLayout track the UTF-8 segmentation of the input
@@ -150,7 +163,7 @@ class VirtualKeyboard
 
     // Unified cursor movement helper
     void moveCursorDelta(int dRow, int dCol);
-#if defined(GAT562_T9_KEYBOARD)
+#if defined(GAT562_T9_KEYBOARD) && defined(VK_HAS_CJK_IME)
     bool hasChineseCandidates() const;
     uint8_t chineseCandidateCount() const;
     bool moveCandidateCursor(int delta);
@@ -166,7 +179,7 @@ class VirtualKeyboard
 #endif
     void selectChineseChar(uint8_t chridx);
     void showNextSelection();
-#if defined(CJK_IME_ZHUYIN)
+#if defined(CJK_IME_ZHUYIN) || defined(VK_HAS_PINYIN_PREDICTION)
     // Whether the candidates span more than one page. draw() uses it to decide
     // whether to render ">", and handleLongPress() to decide whether a long press
     // on the tenth column pages forward.
