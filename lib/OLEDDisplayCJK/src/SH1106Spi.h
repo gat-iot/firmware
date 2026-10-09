@@ -33,6 +33,7 @@
 
 #include "OLEDDisplay.h"
 #include <SPI.h>
+#include <algorithm>
 
 class SH1106Spi : public OLEDDisplay {
   private:
@@ -85,10 +86,10 @@ class SH1106Spi : public OLEDDisplay {
          for (x = 0; x < displayWidth; x++) {
           uint16_t pos = x + y * displayWidth;
           if (buffer[pos] != buffer_back[pos]) {
-            minBoundY = _min(minBoundY, y);
-            maxBoundY = _max(maxBoundY, y);
-            minBoundX = _min(minBoundX, x);
-            maxBoundX = _max(maxBoundX, x);
+            minBoundY = std::min(minBoundY, y);
+            maxBoundY = std::max(maxBoundY, y);
+            minBoundX = std::min(minBoundX, x);
+            maxBoundX = std::max(maxBoundX, x);
           }
           buffer_back[pos] = buffer[pos];
         }
