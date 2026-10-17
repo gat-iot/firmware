@@ -388,16 +388,18 @@ void ScanI2CTwoWire::scanPort(I2CPort port, uint8_t *address, uint8_t asize)
             case BME_ADDR_ALTERNATE:
                 registerValue = getRegisterValue(ScanI2CTwoWire::RegisterLocation(addr, 0xD0), 1); // GET_ID
 #ifdef GAT562_BME280_ADDRESS
-                // The GAT562 has a fixed on-board BME280. If its first ID read
-                // is not ready, keep the known board device from falling
-                // through to the generic BMP280 fallback.
-                if (addr.address == GAT562_BME280_ADDRESS && registerValue != 0x60) {
+                // Preserve the board's BME280 startup fallback, but honor a valid BMP280 ID.
+                if (addr.address == GAT562_BME280_ADDRESS && registerValue != 0x60 && registerValue != 0x58) {
                     logFoundDevice("GAT562 BME280", (uint8_t)addr.address);
                     type = BME_280;
                     break;
                 }
 #endif
                 switch (registerValue) {
+                case 0x58:
+                    logFoundDevice("BMP280", (uint8_t)addr.address);
+                    type = BMP_280;
+                    break;
                 case 0x61:
                     logFoundDevice("BME680", (uint8_t)addr.address);
                     type = BME_680;
