@@ -2247,7 +2247,7 @@ int Screen::handleInputEvent(const InputEvent *event)
                 showFrame(FrameDirection::PREVIOUS);
             } else if (event->inputEvent == INPUT_BROKER_RIGHT) {
                 showFrame(FrameDirection::NEXT);
-#if defined(GAT562_T9_KEYBOARD)
+#if defined(GAT562) || defined(GAT562_T9_KEYBOARD)
             } else if (event->inputEvent == INPUT_BROKER_USER_PRESS) {
                 handleSetOn(false);
                 return 1;
