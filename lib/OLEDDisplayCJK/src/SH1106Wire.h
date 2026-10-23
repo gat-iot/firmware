@@ -33,6 +33,7 @@
 
 #include "OLEDDisplay.h"
 #include <Wire.h>
+#include <algorithm>
 
 #if defined(ARDUINO_ARCH_ESP32)
 #define I2C_OLED_TRANSFER_BYTE 64 /** ESP32 can Transfer Max 128 bytes */
@@ -117,10 +118,10 @@ class SH1106Wire : public OLEDDisplay {
           for (x = 0; x < displayWidth; x++) {
            uint16_t pos = x + y * displayWidth;
            if (buffer[pos] != buffer_back[pos]) {
-             minBoundY = _min(minBoundY, y);
-             maxBoundY = _max(maxBoundY, y);
-             minBoundX = _min(minBoundX, x);
-             maxBoundX = _max(maxBoundX, x);
+             minBoundY = std::min(minBoundY, y);
+             maxBoundY = std::max(maxBoundY, y);
+             minBoundX = std::min(minBoundX, x);
+             maxBoundX = std::max(maxBoundX, x);
            }
            buffer_back[pos] = buffer[pos];
          }
